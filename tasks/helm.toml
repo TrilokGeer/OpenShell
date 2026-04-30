@@ -7,3 +7,24 @@
 description = "Lint the openshell helm chart"
 run = "helm lint deploy/helm/openshell"
 hide = true
+
+["helm:skaffold:dev"]
+description = "Run skaffold dev for deploy/helm/openshell (iterative deploy)"
+dir = "deploy/helm/openshell"
+run = "skaffold dev"
+
+["helm:skaffold:run"]
+description = "Run skaffold run for deploy/helm/openshell (one-shot deploy)"
+dir = "deploy/helm/openshell"
+run = "skaffold run"
+
+["helm:skaffold:delete"]
+description = "Run skaffold delete for deploy/helm/openshell"
+dir = "deploy/helm/openshell"
+run = "skaffold delete"
+
+["helm:skaffold:diagnose"]
+description = "Run skaffold diagnose for deploy/helm/openshell"
+dir = "deploy/helm/openshell"
+run = "skaffold diagnose"
+hide = true

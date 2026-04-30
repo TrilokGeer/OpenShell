@@ -250,6 +250,19 @@ provenance = "github-attestations"
 version = "1.95.0"
 backend = "core:rust"
 
+[[tools.skaffold]]
+version = "2.19.0"
+backend = "aqua:GoogleContainerTools/skaffold"
+
+[tools.skaffold."platforms.linux-arm64"]
+url = "https://storage.googleapis.com/skaffold/releases/v2.19.0/skaffold-linux-arm64"
+
+[tools.skaffold."platforms.linux-x64"]
+url = "https://storage.googleapis.com/skaffold/releases/v2.19.0/skaffold-linux-amd64"
+
+[tools.skaffold."platforms.macos-arm64"]
+url = "https://storage.googleapis.com/skaffold/releases/v2.19.0/skaffold-darwin-arm64"
+
 [[tools.uv]]
 version = "0.10.12"
 backend = "aqua:astral-sh/uv"

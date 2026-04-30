@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+# Skaffold v4 combines rendered manifests under `manifests` and applies them with a deployer.
+# See https://skaffold.dev/docs/references/yaml/ (schema / anchors / multi-config `---`)
+# and https://skaffold.dev/docs/deployers/kubectl/ (`deploy.kubectl` applies rendered output).
 apiVersion: skaffold/v4beta14
 kind: Config
 metadata:
@@ -8,7 +11,10 @@ metadata:
 build:
   local:
     push: false
-deploy:
+manifests:
+  rawYaml:
+    - ../../kube/manifests/openshell-namespace.yaml
+    - ../../kube/manifests/agent-sandbox.yaml
   helm:
     releases:
       - name: openshell
@@ -17,3 +23,5 @@ deploy:
           - values.yaml
         createNamespace: true
         namespace: openshell
+deploy:
+  kubectl: {}

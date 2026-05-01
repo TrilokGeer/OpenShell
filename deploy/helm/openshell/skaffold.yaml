@@ -42,15 +42,15 @@ deploy:
       # Envoy Gateway — Kubernetes Gateway API implementation.
       # Installs the Gateway API CRDs and the "eg" GatewayClass.
       # Required when httpRoute.enabled is true in the openshell release.
-      - name: envoy-gateway
-        repo: https://gateway.envoyproxy.io
-        remoteChart: gateway-helm
-        version: v1.7.2
-        namespace: envoy-gateway-system
-        createNamespace: true
-        # wait ensures Gateway API CRDs are registered before the openshell
-        # release attempts to create Gateway and HTTPRoute resources.
-        wait: true
+      #- name: envoy-gateway
+      #  repo: https://gateway.envoyproxy.io
+      #  remoteChart: gateway-helm
+      #  version: v1.7.2
+      #  namespace: envoy-gateway-system
+      #  createNamespace: true
+      #  # wait ensures Gateway API CRDs are registered before the openshell
+      #  # release attempts to create Gateway and HTTPRoute resources.
+      #  wait: true
       - name: openshell
         chartPath: .
         namespace: openshell

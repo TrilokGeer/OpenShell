@@ -29,10 +29,6 @@ build:
         dockerfile: deploy/docker/Dockerfile.dev
         target: supervisor
 deploy:
-  hooks:
-    after:
-      - host:
-          command: ["kubectl", "-n", "openshell", "rollout", "restart", "statefulset/openshell"]
   helm:
     releases:
       - name: cert-manager

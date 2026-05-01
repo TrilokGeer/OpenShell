@@ -67,16 +67,17 @@ CMD ["--port", "8080"]
 FROM nvcr.io/nvidia/base/ubuntu:noble-20251013 AS supervisor
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates && \
+    ca-certificates \
+    iproute2 && \
     apt-get install -y --only-upgrade gpgv && \
     rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --user-group openshell
+# The sandbox binary validates that a 'sandbox' user exists in the image
+# (via getpwnam) and uses it to drop privileges for the user's process.
+RUN useradd --create-home --user-group sandbox
 
 WORKDIR /app
 
 COPY --from=rust-builder /usr/local/bin/openshell-sandbox /usr/local/bin/
-
-USER openshell
 
 ENTRYPOINT ["openshell-sandbox"]

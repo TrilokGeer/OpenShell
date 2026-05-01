@@ -173,3 +173,39 @@ certManager:
     - host.docker.internal
   serverIpAddresses:
     - 127.0.0.1
+
+# Kubernetes Ingress resource.
+# Works with any Ingress controller; k3s ships Traefik by default.
+# For gRPC-specific routing (h2c), add controller annotations as needed.
+ingress:
+  enabled: false
+  # Ingress class name. Leave empty to use the cluster default (Traefik on k3s).
+  className: ""
+  annotations: {}
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Kubernetes Gateway API — HTTPRoute and Gateway resources.
+# Requires a Gateway API controller in the cluster. Install Envoy Gateway via
+# the skaffold.yaml releases or independently:
+#   helm install eg oci://docker.io/envoyproxy/gateway-helm \
+#     --version v1.4.1 -n envoy-gateway-system --create-namespace
+httpRoute:
+  enabled: false
+  # GatewayClass to reference. Envoy Gateway installs one named "eg".
+  gatewayClassName: "eg"
+  # Hostnames the HTTPRoute matches on. Leave empty to match all hosts.
+  hostnames: []
+  # When true, a Gateway resource is created in the release namespace.
+  # Set to false and configure gatewayName/gatewayNamespace to attach
+  # to a pre-existing shared Gateway instead.
+  createGateway: true
+  # Name of the Gateway resource. Defaults to the chart fullname.
+  gatewayName: ""
+  # Namespace of the Gateway referenced by the HTTPRoute parentRef.
+  # Defaults to the release namespace.
+  gatewayNamespace: ""

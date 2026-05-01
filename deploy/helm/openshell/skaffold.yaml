@@ -39,6 +39,18 @@ deploy:
         createNamespace: true
         setValues:
           crds.enabled: true
+      # Envoy Gateway — Kubernetes Gateway API implementation.
+      # Installs the Gateway API CRDs and the "eg" GatewayClass.
+      # Required when httpRoute.enabled is true in the openshell release.
+      - name: envoy-gateway
+        repo: https://gateway.envoyproxy.io
+        remoteChart: gateway-helm
+        version: v1.7.2
+        namespace: envoy-gateway-system
+        createNamespace: true
+        # wait ensures Gateway API CRDs are registered before the openshell
+        # release attempts to create Gateway and HTTPRoute resources.
+        wait: true
       - name: openshell
         chartPath: .
         namespace: openshell
@@ -51,6 +63,10 @@ deploy:
           # setup task first, then uncomment the line below:
           #   mise run keycloak:k8s:setup
           #- values-keycloak.yaml
+          # To enable Traefik Ingress (k3s built-in, no extra install needed):
+          #- values-ingress.yaml
+          # To enable the Gateway API HTTPRoute (requires Envoy Gateway above):
+          #- values-gateway.yaml
         setValueTemplates:
           image.repository: '{{.IMAGE_REPO_openshell_gateway}}'
           image.tag: '{{.IMAGE_TAG_openshell_gateway}}'

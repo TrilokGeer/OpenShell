@@ -15,6 +15,9 @@ CLUSTER_NAME="${HELM_K3S_CLUSTER_NAME:-openshell-dev}"
 # Host port forwarded to the chart's gateway NodePort (values.yaml service.nodePort).
 GATEWAY_NODEPORT="${HELM_K3S_GATEWAY_NODEPORT:-30051}"
 HOST_GATEWAY_PORT="${HELM_K3S_HOST_GATEWAY_PORT:-${GATEWAY_NODEPORT}}"
+# Host port forwarded to Traefik's port 80 via the k3d load balancer.
+# Used when the Ingress is enabled (values-ingress.yaml).
+HOST_INGRESS_PORT="${HELM_K3S_INGRESS_HOST_PORT:-8080}"
 
 default_kubeconfig="${ROOT}/kubeconfig"
 if [[ -n "${HELM_K3S_KUBECONFIG:-}" ]]; then
@@ -35,10 +38,11 @@ usage() {
 usage: $(basename "$0") <create|delete|start|stop|status>
 
 Environment:
-  HELM_K3S_CLUSTER_NAME       k3d cluster name (default: openshell-dev)
-  HELM_K3S_KUBECONFIG         kubeconfig file to write/merge (default: repo kubeconfig or \$KUBECONFIG)
-  HELM_K3S_GATEWAY_NODEPORT   Kubernetes NodePort for gateway (default: 30051, matches Helm chart)
-  HELM_K3S_HOST_GATEWAY_PORT  Host port mapped to NodePort (default: same as NodePort)
+  HELM_K3S_CLUSTER_NAME        k3d cluster name (default: openshell-dev)
+  HELM_K3S_KUBECONFIG          kubeconfig file to write/merge (default: repo kubeconfig or \$KUBECONFIG)
+  HELM_K3S_GATEWAY_NODEPORT    Kubernetes NodePort for gateway (default: 30051, matches Helm chart)
+  HELM_K3S_HOST_GATEWAY_PORT   Host port mapped to NodePort (default: same as NodePort)
+  HELM_K3S_INGRESS_HOST_PORT   Host port mapped to Traefik ingress port 80 (default: 8080)
 
 macOS uses k3d (Docker required). Linux uses the same k3d flow when Docker is available.
 Pair with: mise run helm:skaffold:dev
@@ -146,16 +150,18 @@ cmd_create() {
   require_k3d
 
   local port_map="${HOST_GATEWAY_PORT}:${GATEWAY_NODEPORT}@server:0"
+  local ingress_port_map="${HOST_INGRESS_PORT}:80@loadbalancer"
 
   if k3d_cluster_exists; then
     echo "k3d cluster '${CLUSTER_NAME}' already exists; merging kubeconfig."
   else
-    echo "Creating k3d cluster '${CLUSTER_NAME}' (maps host:${HOST_GATEWAY_PORT} -> NodePort ${GATEWAY_NODEPORT})..."
+    echo "Creating k3d cluster '${CLUSTER_NAME}' (maps host:${HOST_GATEWAY_PORT} -> NodePort ${GATEWAY_NODEPORT}, host:${HOST_INGRESS_PORT} -> Traefik :80)..."
     k3d cluster create "${CLUSTER_NAME}" \
       --wait \
       --kubeconfig-update-default=false \
       --kubeconfig-switch-context=false \
-      --port "${port_map}"
+      --port "${port_map}" \
+      --port "${ingress_port_map}"
   fi
   merge_kubeconfig
   apply_base_manifests
@@ -163,6 +169,7 @@ cmd_create() {
   echo "Active context: $(k3d_context_name)"
   echo "Kubeconfig: ${KUBECONFIG_TARGET}"
   echo "Gateway (when chart uses NodePort ${GATEWAY_NODEPORT}): http://127.0.0.1:${HOST_GATEWAY_PORT}"
+  echo "Ingress (when values-ingress.yaml enabled):             http://127.0.0.1:${HOST_INGRESS_PORT}"
 }
 
 cmd_delete() {

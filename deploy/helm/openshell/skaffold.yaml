@@ -11,17 +11,21 @@ metadata:
 build:
   local:
     push: false
-manifests:
-  rawYaml:
-    - ../../kube/manifests/openshell-namespace.yaml
-    - ../../kube/manifests/agent-sandbox.yaml
+deploy:
   helm:
     releases:
+      - name: cert-manager
+        repo: https://charts.jetstack.io
+        remoteChart: cert-manager
+        version: v1.20.2
+        namespace: cert-manager
+        createNamespace: true
+        setValues:
+          crds.enabled: true
       - name: openshell
         chartPath: .
         valuesFiles:
           - values.yaml
+          - values-cert-manager.yaml
         createNamespace: true
         namespace: openshell
-deploy:
-  kubectl: {}

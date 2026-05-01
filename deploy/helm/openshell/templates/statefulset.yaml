@@ -183,7 +183,14 @@ spec:
             secretName: {{ .Values.server.tls.certSecretName }}
         - name: tls-client-ca
           secret:
+            {{- if and .Values.certManager.enabled .Values.certManager.clientCaFromServerTlsSecret }}
+            secretName: {{ .Values.server.tls.certSecretName }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+            {{- else }}
             secretName: {{ .Values.server.tls.clientCaSecretName }}
+            {{- end }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

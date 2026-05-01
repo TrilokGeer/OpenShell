@@ -58,3 +58,10 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Namespaced Issuer (selfSigned) for cert-manager CA bootstrap.
+*/}}
+{{- define "openshell.issuerSelfSigned" -}}
+{{- printf "%s-selfsigned" (include "openshell.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}

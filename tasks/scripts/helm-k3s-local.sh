@@ -18,6 +18,9 @@ HOST_GATEWAY_PORT="${HELM_K3S_HOST_GATEWAY_PORT:-${GATEWAY_NODEPORT}}"
 # Host port forwarded to Traefik's port 80 via the k3d load balancer.
 # Used when the Ingress is enabled (values-ingress.yaml).
 HOST_INGRESS_PORT="${HELM_K3S_INGRESS_HOST_PORT:-8080}"
+# Host port forwarded to the Envoy Gateway proxy NodePort (30080).
+# Used when deploy/kube/manifests/envoy-gateway-openshell.yaml is applied.
+HOST_ENVOY_GATEWAY_PORT="${HELM_K3S_ENVOY_GATEWAY_PORT:-30080}"
 
 default_kubeconfig="${ROOT}/kubeconfig"
 if [[ -n "${HELM_K3S_KUBECONFIG:-}" ]]; then
@@ -43,6 +46,7 @@ Environment:
   HELM_K3S_GATEWAY_NODEPORT    Kubernetes NodePort for gateway (default: 30051, matches Helm chart)
   HELM_K3S_HOST_GATEWAY_PORT   Host port mapped to NodePort (default: same as NodePort)
   HELM_K3S_INGRESS_HOST_PORT   Host port mapped to Traefik ingress port 80 (default: 8080)
+  HELM_K3S_ENVOY_GATEWAY_PORT  Host port mapped to Envoy Gateway proxy NodePort 30080 (default: 30080)
 
 macOS uses k3d (Docker required). Linux uses the same k3d flow when Docker is available.
 Pair with: mise run helm:skaffold:dev
@@ -151,25 +155,28 @@ cmd_create() {
 
   local port_map="${HOST_GATEWAY_PORT}:${GATEWAY_NODEPORT}@server:0"
   local ingress_port_map="${HOST_INGRESS_PORT}:80@loadbalancer"
+  local envoy_port_map="${HOST_ENVOY_GATEWAY_PORT}:30080@server:0"
 
   if k3d_cluster_exists; then
     echo "k3d cluster '${CLUSTER_NAME}' already exists; merging kubeconfig."
   else
-    echo "Creating k3d cluster '${CLUSTER_NAME}' (maps host:${HOST_GATEWAY_PORT} -> NodePort ${GATEWAY_NODEPORT}, host:${HOST_INGRESS_PORT} -> Traefik :80)..."
+    echo "Creating k3d cluster '${CLUSTER_NAME}'..."
     k3d cluster create "${CLUSTER_NAME}" \
       --wait \
       --kubeconfig-update-default=false \
       --kubeconfig-switch-context=false \
       --port "${port_map}" \
-      --port "${ingress_port_map}"
+      --port "${ingress_port_map}" \
+      --port "${envoy_port_map}"
   fi
   merge_kubeconfig
   apply_base_manifests
   configure_ghcr_credentials
   echo "Active context: $(k3d_context_name)"
   echo "Kubeconfig: ${KUBECONFIG_TARGET}"
-  echo "Gateway (when chart uses NodePort ${GATEWAY_NODEPORT}): http://127.0.0.1:${HOST_GATEWAY_PORT}"
-  echo "Ingress (when values-ingress.yaml enabled):             http://127.0.0.1:${HOST_INGRESS_PORT}"
+  echo "Gateway (when chart uses NodePort ${GATEWAY_NODEPORT}):              http://127.0.0.1:${HOST_GATEWAY_PORT}"
+  echo "Ingress (when values-ingress.yaml enabled):                          http://127.0.0.1:${HOST_INGRESS_PORT}"
+  echo "Envoy Gateway (when envoy-gateway-openshell.yaml applied):           http://127.0.0.1:${HOST_ENVOY_GATEWAY_PORT}"
 }
 
 cmd_delete() {

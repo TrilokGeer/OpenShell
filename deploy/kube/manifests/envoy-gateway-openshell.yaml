@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Envoy Gateway manifests for the OpenShell server.
+#
+# Prerequisites:
+#   1. Envoy Gateway installed (see skaffold.yaml envoy-gateway release).
+#   2. OpenShell deployed with values-gateway.yaml (httpRoute.enabled: true).
+#      This creates a Gateway named "openshell" in the openshell namespace.
+#
+# Apply after the OpenShell Helm release:
+#   kubectl apply -f deploy/kube/manifests/envoy-gateway-openshell.yaml
+#
+# HTTP CONNECT tunneling:
+#   The BackendTrafficPolicy enables HTTP CONNECT upgrade on the Gateway so
+#   the OpenShell CLI can establish SSH proxy tunnels over port 80.
+#   See: https://gateway.envoyproxy.io/docs/tasks/traffic/http-connect-tunnels/
+#
+# GatewayClass:
+#   The Envoy Gateway Helm chart creates an "eg" GatewayClass automatically.
+#   The GatewayClass below overrides it to reference the EnvoyProxy config,
+#   which sets the managed proxy Service to NodePort. This avoids a scheduling
+#   conflict on single-node k3d clusters where klipper-lb (servicelb) and
+#   Traefik both try to claim hostPort 80.
+#   After applying, find the assigned NodePort:
+#     kubectl get svc -n envoy-gateway-system
+
+---
+# EnvoyProxy configures the managed Envoy proxy Service as NodePort to bypass
+# klipper-lb, preventing hostPort conflicts with Traefik on k3d.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: openshell-proxy-config
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: NodePort
+        patch:
+          type: StrategicMergeFrom
+          value:
+            spec:
+              ports:
+                - port: 80
+                  nodePort: 30080
+
+---
+# Cluster-scoped GatewayClass referencing the Envoy Gateway controller.
+# The Envoy Gateway Helm release creates this automatically; applying it again
+# updates it to reference the EnvoyProxy config above.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: openshell-proxy-config
+    namespace: envoy-gateway-system
+
+---
+# Allow HTTP CONNECT upgrades on the OpenShell Gateway so SSH proxy tunnels
+# can be established by the CLI via port 80.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: openshell-connect
+  namespace: openshell
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: openshell
+  httpUpgrade:
+    - type: CONNECT
+

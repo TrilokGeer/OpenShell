@@ -47,6 +47,10 @@ deploy:
           - values.yaml
           - values-cert-manager.yaml
           - values-skaffold.yaml
+          # To enable OIDC with a local Keycloak instance, run the one-time
+          # setup task first, then uncomment the line below:
+          #   mise run keycloak:k8s:setup
+          #- values-keycloak.yaml
         setValueTemplates:
           image.repository: '{{.IMAGE_REPO_openshell_gateway}}'
           image.tag: '{{.IMAGE_TAG_openshell_gateway}}'

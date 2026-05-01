@@ -1,9 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Skaffold v4 combines rendered manifests under `manifests` and applies them with a deployer.
-# See https://skaffold.dev/docs/references/yaml/ (schema / anchors / multi-config `---`)
-# and https://skaffold.dev/docs/deployers/kubectl/ (`deploy.kubectl` applies rendered output).
+# Local dev: builds gateway + supervisor images using Docker with a full Rust
+# compilation stage (deploy/docker/Dockerfile.dev — no pre-staged binaries needed).
+#
+# Run from repo root:
+#   skaffold dev -f deploy/helm/openshell/skaffold.yaml
+#
+# See https://skaffold.dev/docs/deployers/helm/ (setValueTemplates, IMAGE_* fields).
 apiVersion: skaffold/v4beta14
 kind: Config
 metadata:
@@ -11,7 +15,24 @@ metadata:
 build:
   local:
     push: false
+  tagPolicy:
+    inputDigest: {}
+  artifacts:
+    - image: openshell/gateway
+      context: ../../..
+      docker:
+        dockerfile: deploy/docker/Dockerfile.dev
+        target: gateway
+    - image: openshell/supervisor
+      context: ../../..
+      docker:
+        dockerfile: deploy/docker/Dockerfile.dev
+        target: supervisor
 deploy:
+  hooks:
+    after:
+      - host:
+          command: ["kubectl", "-n", "openshell", "rollout", "restart", "statefulset/openshell"]
   helm:
     releases:
       - name: cert-manager
@@ -24,8 +45,13 @@ deploy:
           crds.enabled: true
       - name: openshell
         chartPath: .
+        namespace: openshell
+        createNamespace: true
         valuesFiles:
           - values.yaml
           - values-cert-manager.yaml
-        createNamespace: true
-        namespace: openshell
+          - values-skaffold.yaml
+        setValueTemplates:
+          image.repository: '{{.IMAGE_REPO_openshell_gateway}}'
+          image.tag: '{{.IMAGE_TAG_openshell_gateway}}'
+          server.sandboxImage: '{{.IMAGE_FULLY_QUALIFIED_openshell_supervisor}}'

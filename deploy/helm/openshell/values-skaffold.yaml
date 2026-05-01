@@ -7,4 +7,5 @@ image:
 
 server:
   sandboxImagePullPolicy: IfNotPresent
+  supervisorImagePullPolicy: IfNotPresent
   disableTls: true

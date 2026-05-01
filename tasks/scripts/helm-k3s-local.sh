@@ -107,6 +107,39 @@ merge_kubeconfig() {
   kubectl --kubeconfig="${KUBECONFIG_TARGET}" config use-context "$(k3d_context_name)"
 }
 
+apply_base_manifests() {
+  require_kubectl
+  local manifest="${ROOT}/deploy/kube/manifests/agent-sandbox.yaml"
+  echo "Applying agent-sandbox manifests..."
+  kubectl --kubeconfig="${KUBECONFIG_TARGET}" apply -f "${manifest}"
+}
+
+configure_ghcr_credentials() {
+  [[ -n "${GITHUB_PAT:-}" && -n "${GITHUB_USERNAME:-}" ]] || return 0
+
+  echo "Configuring ghcr.io credentials on cluster nodes..."
+
+  local registries_content
+  registries_content="$(printf 'configs:\n  "ghcr.io":\n    auth:\n      username: %s\n      password: %s\n' \
+    "${GITHUB_USERNAME}" "${GITHUB_PAT}")"
+
+  local -a nodes
+  mapfile -t nodes < <(docker ps --format '{{.Names}}' \
+    --filter "name=k3d-${CLUSTER_NAME}-server" 2>/dev/null || true)
+
+  if [[ ${#nodes[@]} -eq 0 ]]; then
+    echo "warning: no server nodes found for cluster '${CLUSTER_NAME}', skipping ghcr.io credential setup." >&2
+    return 0
+  fi
+
+  for node in "${nodes[@]}"; do
+    printf '%s\n' "${registries_content}" \
+      | docker exec -i "${node}" sh -c 'mkdir -p /etc/rancher/k3s && cat > /etc/rancher/k3s/registries.yaml'
+    docker exec "${node}" kill -SIGHUP 1
+    echo "  Configured ghcr.io credentials on ${node}"
+  done
+}
+
 cmd_create() {
   require_supported_os
   require_docker
@@ -125,6 +158,8 @@ cmd_create() {
       --port "${port_map}"
   fi
   merge_kubeconfig
+  apply_base_manifests
+  configure_ghcr_credentials
   echo "Active context: $(k3d_context_name)"
   echo "Kubeconfig: ${KUBECONFIG_TARGET}"
   echo "Gateway (when chart uses NodePort ${GATEWAY_NODEPORT}): http://127.0.0.1:${HOST_GATEWAY_PORT}"

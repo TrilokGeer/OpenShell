@@ -312,6 +312,8 @@ impl KubernetesComputeDriver {
             sandbox.spec.as_ref(),
             &self.config.default_image,
             &self.config.image_pull_policy,
+            &self.config.supervisor_image,
+            &self.config.supervisor_image_pull_policy,
             &sandbox.id,
             &sandbox.name,
             &self.config.grpc_endpoint,
@@ -686,11 +688,11 @@ fn supervisor_volume_mount() -> serde_json::Value {
 
 /// Build the init container that copies the supervisor binary into the emptyDir.
 ///
-/// The sandbox image is expected to have `openshell-sandbox` on its PATH
+/// The supervisor image is expected to have `openshell-sandbox` on its PATH
 /// (e.g. at `/usr/local/bin/openshell-sandbox`). The init container resolves
 /// the binary via `command -v` and copies it into the shared emptyDir volume
 /// so the agent container can execute it from a fixed, writable path.
-fn supervisor_init_container(image: &str, image_pull_policy: &str) -> serde_json::Value {
+fn supervisor_init_container(supervisor_image: &str, supervisor_image_pull_policy: &str) -> serde_json::Value {
     let copy_cmd = format!(
         "set -e && \
          mkdir -p {SUPERVISOR_MOUNT_PATH} && \
@@ -700,7 +702,7 @@ fn supervisor_init_container(image: &str, image_pull_policy: &str) -> serde_json
     );
     let mut spec = serde_json::json!({
         "name": SUPERVISOR_INIT_CONTAINER_NAME,
-        "image": image,
+        "image": supervisor_image,
         "command": ["sh", "-c", copy_cmd],
         "securityContext": {"runAsUser": 0},
         "volumeMounts": [{
@@ -709,8 +711,8 @@ fn supervisor_init_container(image: &str, image_pull_policy: &str) -> serde_json
             "readOnly": false
         }]
     });
-    if !image_pull_policy.is_empty() {
-        spec["imagePullPolicy"] = serde_json::json!(image_pull_policy);
+    if !supervisor_image_pull_policy.is_empty() {
+        spec["imagePullPolicy"] = serde_json::json!(supervisor_image_pull_policy);
     }
     spec
 }
@@ -718,8 +720,8 @@ fn supervisor_init_container(image: &str, image_pull_policy: &str) -> serde_json
 /// Apply supervisor side-load transforms to an already-built pod template JSON.
 ///
 /// Injects an emptyDir volume, an init container that copies the supervisor
-/// binary from the sandbox image into that volume, and a read-only volume mount
-/// + command override on the agent container.
+/// binary from the supervisor image into that volume, and a read-only volume
+/// mount + command override on the agent container.
 ///
 /// The `runAsUser: 0` override ensures the supervisor binary runs as root
 /// regardless of the image's `USER` directive. The supervisor needs root for
@@ -728,8 +730,8 @@ fn supervisor_init_container(image: &str, image_pull_policy: &str) -> serde_json
 /// policy's `run_as_user`/`run_as_group`.
 fn apply_supervisor_sideload(
     pod_template: &mut serde_json::Value,
-    image: &str,
-    image_pull_policy: &str,
+    supervisor_image: &str,
+    supervisor_image_pull_policy: &str,
 ) {
     let Some(spec) = pod_template.get_mut("spec").and_then(|v| v.as_object_mut()) else {
         return;
@@ -750,7 +752,7 @@ fn apply_supervisor_sideload(
         .or_insert_with(|| serde_json::json!([]))
         .as_array_mut();
     if let Some(init_containers) = init_containers {
-        init_containers.push(supervisor_init_container(image, image_pull_policy));
+        init_containers.push(supervisor_init_container(supervisor_image, supervisor_image_pull_policy));
     }
 
     // 3. Find the agent container and add volume mount + command override
@@ -916,6 +918,8 @@ fn sandbox_to_k8s_spec(
     spec: Option<&SandboxSpec>,
     default_image: &str,
     image_pull_policy: &str,
+    supervisor_image: &str,
+    supervisor_image_pull_policy: &str,
     sandbox_id: &str,
     sandbox_name: &str,
     grpc_endpoint: &str,
@@ -956,6 +960,8 @@ fn sandbox_to_k8s_spec(
                     spec.gpu,
                     default_image,
                     image_pull_policy,
+                    supervisor_image,
+                    supervisor_image_pull_policy,
                     sandbox_id,
                     sandbox_name,
                     grpc_endpoint,
@@ -1002,6 +1008,8 @@ fn sandbox_to_k8s_spec(
                 spec.as_ref().is_some_and(|s| s.gpu),
                 default_image,
                 image_pull_policy,
+                supervisor_image,
+                supervisor_image_pull_policy,
                 sandbox_id,
                 sandbox_name,
                 grpc_endpoint,
@@ -1027,6 +1035,8 @@ fn sandbox_template_to_k8s(
     gpu: bool,
     default_image: &str,
     image_pull_policy: &str,
+    supervisor_image: &str,
+    supervisor_image_pull_policy: &str,
     sandbox_id: &str,
     sandbox_name: &str,
     grpc_endpoint: &str,
@@ -1038,8 +1048,6 @@ fn sandbox_template_to_k8s(
     host_gateway_ip: &str,
     inject_workspace: bool,
 ) -> serde_json::Value {
-    // The supervisor binary is always side-loaded from the node filesystem
-    // via a hostPath volume, regardless of which sandbox image is used.
 
     let mut metadata = serde_json::Map::new();
     if !template.labels.is_empty() {
@@ -1158,8 +1166,8 @@ fn sandbox_template_to_k8s(
     let mut result = serde_json::Value::Object(template_value);
 
     // Side-load the supervisor binary via an init container that copies it
-    // from the sandbox image into a shared emptyDir volume.
-    apply_supervisor_sideload(&mut result, image, image_pull_policy);
+    // from the supervisor image into a shared emptyDir volume.
+    apply_supervisor_sideload(&mut result, supervisor_image, supervisor_image_pull_policy);
 
     // Inject workspace persistence (init container + PVC volume mount) so
     // that /sandbox data survives pod rescheduling.  Skipped when the user
@@ -1497,7 +1505,7 @@ mod tests {
             }
         });
 
-        apply_supervisor_sideload(&mut pod_template, "custom-image:latest", "IfNotPresent");
+        apply_supervisor_sideload(&mut pod_template, "supervisor-image:latest", "IfNotPresent");
 
         let sc = &pod_template["spec"]["containers"][0]["securityContext"];
         assert_eq!(
@@ -1517,7 +1525,7 @@ mod tests {
             }
         });
 
-        apply_supervisor_sideload(&mut pod_template, "custom-image:latest", "IfNotPresent");
+        apply_supervisor_sideload(&mut pod_template, "supervisor-image:latest", "IfNotPresent");
 
         // Volume should be an emptyDir
         let volumes = pod_template["spec"]["volumes"]
@@ -1530,7 +1538,7 @@ mod tests {
             "volume should be emptyDir, not hostPath"
         );
 
-        // Init container should be present and use the sandbox image
+        // Init container should use the supervisor image, not the sandbox image
         let init_containers = pod_template["spec"]["initContainers"]
             .as_array()
             .expect("initContainers should exist");
@@ -1539,7 +1547,7 @@ mod tests {
             init_containers[0]["name"],
             SUPERVISOR_INIT_CONTAINER_NAME
         );
-        assert_eq!(init_containers[0]["image"], "custom-image:latest");
+        assert_eq!(init_containers[0]["image"], "supervisor-image:latest");
         assert_eq!(init_containers[0]["imagePullPolicy"], "IfNotPresent");
 
         // Agent container command should be overridden to the emptyDir path
@@ -1616,6 +1624,8 @@ mod tests {
             true,
             "openshell/sandbox:latest",
             "",
+            "openshell/supervisor:latest",
+            "",
             "sandbox-id",
             "sandbox-name",
             "https://gateway.example.com",
@@ -1658,6 +1668,8 @@ mod tests {
             true,
             "openshell/sandbox:latest",
             "",
+            "openshell/supervisor:latest",
+            "",
             "sandbox-id",
             "sandbox-name",
             "https://gateway.example.com",
@@ -1696,6 +1708,8 @@ mod tests {
             false,
             "openshell/sandbox:latest",
             "",
+            "openshell/supervisor:latest",
+            "",
             "sandbox-id",
             "sandbox-name",
             "https://gateway.example.com",
@@ -1730,6 +1744,8 @@ mod tests {
             true,
             "openshell/sandbox:latest",
             "",
+            "openshell/supervisor:latest",
+            "",
             "sandbox-id",
             "sandbox-name",
             "https://gateway.example.com",
@@ -1756,6 +1772,8 @@ mod tests {
             &SandboxTemplate::default(),
             false,
             "openshell/sandbox:latest",
+            "",
+            "openshell/supervisor:latest",
             "",
             "sandbox-id",
             "sandbox-name",
@@ -1788,6 +1806,8 @@ mod tests {
             false,
             "openshell/sandbox:latest",
             "",
+            "openshell/supervisor:latest",
+            "",
             "sandbox-id",
             "sandbox-name",
             "https://gateway.example.com",
@@ -1813,6 +1833,8 @@ mod tests {
             &template,
             false,
             "openshell/sandbox:latest",
+            "",
+            "openshell/supervisor:latest",
             "",
             "sandbox-id",
             "sandbox-name",
@@ -1956,6 +1978,8 @@ mod tests {
             &SandboxTemplate::default(),
             false,
             "openshell/sandbox:latest",
+            "",
+            "openshell/supervisor:latest",
             "",
             "sandbox-id",
             "sandbox-name",

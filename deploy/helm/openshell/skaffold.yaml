@@ -50,4 +50,4 @@ deploy:
         setValueTemplates:
           image.repository: '{{.IMAGE_REPO_openshell_gateway}}'
           image.tag: '{{.IMAGE_TAG_openshell_gateway}}'
-          server.sandboxImage: '{{.IMAGE_FULLY_QUALIFIED_openshell_supervisor}}'
+          server.supervisorImage: '{{.IMAGE_FULLY_QUALIFIED_openshell_supervisor}}'

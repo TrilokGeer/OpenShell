@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Envoy Gateway manifests for the OpenShell server.
+#
+# Prerequisites:
+#   1. Envoy Gateway installed (see skaffold.yaml envoy-gateway release).
+#   2. OpenShell deployed with values-gateway.yaml (grpcRoute.enabled: true).
+#      This creates a Gateway named "openshell" in the openshell namespace.
+#
+# Apply after the OpenShell Helm release:
+#   kubectl apply -f deploy/kube/manifests/envoy-gateway-openshell.yaml
+
+---
+# The Envoy Gateway Helm chart does not create a GatewayClass — we manage it here.
+# The proxy Service defaults to LoadBalancer, which klipper-lb handles in k3d.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller

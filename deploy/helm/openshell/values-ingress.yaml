@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Ingress overlay for k3s + Traefik (the default k3s ingress controller).
+#
+# Add this file to the openshell release valuesFiles to activate:
+#   uncomment values-ingress.yaml in deploy/helm/openshell/skaffold.yaml
+#
+# Access the gateway via the Traefik NodePort (mapped to host port 80 by k3d):
+#   curl -s http://localhost/healthz  OR  grpcurl -plaintext localhost:80 ...
+#
+# For gRPC (HTTP/2 cleartext), Traefik requires the h2c annotation below.
+# Remove it if routing plain HTTP or if TLS terminates upstream.
+
+ingress:
+  enabled: true
+  # Empty uses the cluster default — Traefik on k3s.
+  className: ""
+  annotations:
+    # Enable h2c (HTTP/2 cleartext) so Traefik forwards gRPC traffic correctly.
+    traefik.ingress.kubernetes.io/service.serversscheme: h2c
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix

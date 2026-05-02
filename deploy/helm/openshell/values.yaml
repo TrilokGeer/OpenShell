@@ -78,6 +78,14 @@ server:
   # (Always for :latest, IfNotPresent otherwise).  Set to "Always" for dev
   # clusters so new images are picked up without manual eviction.
   sandboxImagePullPolicy: ""
+  # Image that provides the openshell-sandbox supervisor binary.  An init
+  # container copies the binary from this image into a shared emptyDir volume
+  # before the sandbox container starts.  Should match the gateway image tag
+  # so the supervisor and gateway versions stay in sync.
+  supervisorImage: "ghcr.io/nvidia/openshell/supervisor:latest"
+  # Kubernetes imagePullPolicy for the supervisor init container.
+  # Empty = Kubernetes default.
+  supervisorImagePullPolicy: ""
   # gRPC endpoint for sandboxes to callback to OpenShell (must be reachable from pods)
   grpcEndpoint: "https://openshell.openshell.svc.cluster.local:8080"
   # Public host/port returned to CLI clients for SSH proxy CONNECT requests.
@@ -89,7 +97,7 @@ server:
   # directly and requires client certificates.
   # Name of the Kubernetes Secret holding the NSSH1 HMAC handshake key.
   # The secret must contain a `secret` key with the hex-encoded HMAC key.
-  # For cluster deployments this is auto-created by the bootstrap process.
+  # By default a pre-install/pre-upgrade hook creates it when missing (see sshHandshake).
   sshHandshakeSecretName: "openshell-ssh-handshake"
   # Host gateway IP for sandbox pod hostAliases. When set, sandbox pods get
   # hostAliases entries mapping host.docker.internal and host.openshell.internal
@@ -114,3 +122,70 @@ server:
 # NetworkPolicy restricting SSH ingress on sandbox pods to the gateway only.
 networkPolicy:
   enabled: true
+
+# NSSH1 SSH gateway handshake Secret (`server.sshHandshakeSecretName`).
+# Helm hook creates it only when the Secret does not already exist (safe upgrades).
+# Set sshHandshake.value from a gitignored values file for a stable dev secret.
+sshHandshake:
+  hook:
+    enabled: true
+  # 64 hex chars (32 bytes), matching openshell-bootstrap. If empty, Helm generates
+  # a random value at install template time (two UUIDs, dashes stripped).
+  value: ""
+
+# cert-manager Certificate/Issuer resources (requires cert-manager CRDs in-cluster).
+# Uses namespaced Issuers only (no ClusterIssuer). Does not install cert-manager itself.
+certManager:
+  enabled: false
+  # Secret created for the intermediate CA (Certificate with isCA: true).
+  caSecretName: openshell-ca-tls
+  # Mount gateway client CA from the server TLS secret's ca.crt (populated by
+  # cert-manager for certs issued by a CA Issuer). Avoids a separate
+  # openshell-server-client-ca Secret.
+  clientCaFromServerTlsSecret: true
+  certificateDuration: 8760h
+  certificateRenewBefore: 720h
+  serverDnsNames:
+    - openshell
+    - openshell.openshell.svc
+    - openshell.openshell.svc.cluster.local
+    - localhost
+    - host.docker.internal
+  serverIpAddresses:
+    - 127.0.0.1
+
+# Kubernetes Ingress resource.
+# Works with any Ingress controller; k3s ships Traefik by default.
+# For gRPC-specific routing (h2c), add controller annotations as needed.
+ingress:
+  enabled: false
+  # Ingress class name. Leave empty to use the cluster default (Traefik on k3s).
+  className: ""
+  annotations: {}
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Kubernetes Gateway API — HTTPRoute and Gateway resources.
+# Requires a Gateway API controller in the cluster. Install Envoy Gateway via
+# the skaffold.yaml releases or independently:
+#   helm install eg oci://docker.io/envoyproxy/gateway-helm \
+#     --version v1.4.1 -n envoy-gateway-system --create-namespace
+grpcRoute:
+  enabled: false
+  # GatewayClass to reference. Envoy Gateway installs one named "eg".
+  gatewayClassName: "eg"
+  # Hostnames the GRPCRoute matches on. Leave empty to match all hosts.
+  hostnames: []
+  # When true, a Gateway resource is created in the release namespace.
+  # Set to false and configure gatewayName/gatewayNamespace to attach
+  # to a pre-existing shared Gateway instead.
+  createGateway: true
+  # Name of the Gateway resource. Defaults to the chart fullname.
+  gatewayName: ""
+  # Namespace of the Gateway referenced by the GRPCRoute parentRef.
+  # Defaults to the release namespace.
+  gatewayNamespace: ""

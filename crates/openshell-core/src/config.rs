@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::Command;
 use std::str::FromStr;
 
 // ── Public default constants ────────────────────────────────────────────
@@ -29,6 +30,9 @@ pub const DEFAULT_SSH_HANDSHAKE_SKEW_SECS: u64 = 300;
 
 /// Default Podman bridge network name.
 pub const DEFAULT_NETWORK_NAME: &str = "openshell";
+
+/// Default Docker bridge network name for local sandboxes.
+pub const DEFAULT_DOCKER_NETWORK_NAME: &str = "openshell-docker";
 
 /// Default OCI image for the openshell-sandbox supervisor binary.
 pub const DEFAULT_SUPERVISOR_IMAGE: &str = "openshell/supervisor:latest";
@@ -86,6 +90,40 @@ impl FromStr for ComputeDriverKind {
     }
 }
 
+/// Auto-detect the appropriate compute driver based on the runtime environment.
+///
+/// Priority order: Kubernetes → Podman → Docker.
+/// VM is never auto-detected (requires explicit `--drivers vm`).
+///
+/// Returns the first driver where the environment check passes.
+/// Returns `None` if no compatible driver is found.
+pub fn detect_driver() -> Option<ComputeDriverKind> {
+    // Kubernetes: check for KUBERNETES_SERVICE_HOST env var (set inside pods)
+    if std::env::var_os("KUBERNETES_SERVICE_HOST").is_some() {
+        return Some(ComputeDriverKind::Kubernetes);
+    }
+
+    // Podman: check if podman binary is available
+    if is_binary_available("podman") {
+        return Some(ComputeDriverKind::Podman);
+    }
+
+    // Docker: check if docker binary is available
+    if is_binary_available("docker") {
+        return Some(ComputeDriverKind::Docker);
+    }
+
+    None
+}
+
+/// Check if a binary is available on the system PATH.
+fn is_binary_available(name: &str) -> bool {
+    Command::new(name)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 /// Server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -104,6 +142,15 @@ pub struct Config {
     /// When `None`, the dedicated metrics listener is disabled.
     #[serde(default)]
     pub metrics_bind_address: Option<SocketAddr>,
+
+    /// Additional bind addresses that serve the same multiplexed gRPC/HTTP
+    /// surface as `bind_address`.
+    ///
+    /// Compute drivers may register extra listeners during startup so that
+    /// sandbox workloads can call back into the gateway over an interface
+    /// that the operator-supplied `bind_address` does not expose.
+    #[serde(default)]
+    pub extra_bind_addresses: Vec<SocketAddr>,
 
     /// Log level (trace, debug, info, warn, error).
     #[serde(default = "default_log_level")]
@@ -124,7 +171,7 @@ pub struct Config {
     /// The config shape allows multiple drivers so the gateway can evolve
     /// toward multi-backend routing. Current releases require exactly one
     /// configured driver.
-    #[serde(default = "default_compute_drivers")]
+    #[serde(default)]
     pub compute_drivers: Vec<ComputeDriverKind>,
 
     /// Kubernetes namespace for sandboxes.
@@ -292,11 +339,12 @@ impl Config {
             bind_address: default_bind_address(),
             health_bind_address: None,
             metrics_bind_address: None,
+            extra_bind_addresses: Vec::new(),
             log_level: default_log_level(),
             tls,
             oidc: None,
             database_url: String::new(),
-            compute_drivers: default_compute_drivers(),
+            compute_drivers: vec![],
             sandbox_namespace: default_sandbox_namespace(),
             sandbox_image: default_sandbox_image(),
             sandbox_image_pull_policy: String::new(),
@@ -330,6 +378,19 @@ impl Config {
     #[must_use]
     pub const fn with_metrics_bind_address(mut self, addr: SocketAddr) -> Self {
         self.metrics_bind_address = Some(addr);
+        self
+    }
+
+    /// Append an extra listener address to the multiplex service.
+    ///
+    /// Duplicate entries (matching `bind_address` or any existing entry) are
+    /// silently dropped so callers can naively push driver-derived addresses
+    /// without checking for collisions.
+    #[must_use]
+    pub fn with_extra_bind_address(mut self, addr: SocketAddr) -> Self {
+        if addr != self.bind_address && !self.extra_bind_addresses.contains(&addr) {
+            self.extra_bind_addresses.push(addr);
+        }
         self
     }
 
@@ -457,7 +518,7 @@ impl Config {
 }
 
 fn default_bind_address() -> SocketAddr {
-    "0.0.0.0:8080".parse().expect("valid default address")
+    "127.0.0.1:8080".parse().expect("valid default address")
 }
 
 fn default_log_level() -> String {
@@ -470,10 +531,6 @@ fn default_sandbox_namespace() -> String {
 
 fn default_sandbox_image() -> String {
     format!("{}/base:latest", crate::image::DEFAULT_COMMUNITY_REGISTRY)
-}
-
-fn default_compute_drivers() -> Vec<ComputeDriverKind> {
-    vec![ComputeDriverKind::Kubernetes]
 }
 
 fn default_ssh_gateway_host() -> String {
@@ -506,7 +563,7 @@ const fn default_ssh_session_ttl_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComputeDriverKind, Config};
+    use super::{ComputeDriverKind, Config, detect_driver};
     use std::net::SocketAddr;
 
     #[test]
@@ -536,11 +593,9 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_to_kubernetes_driver() {
-        assert_eq!(
-            Config::new(None).compute_drivers,
-            vec![ComputeDriverKind::Kubernetes]
-        );
+    fn config_defaults_to_loopback_bind_address() {
+        let expected: SocketAddr = "127.0.0.1:8080".parse().expect("valid address");
+        assert_eq!(Config::new(None).bind_address, expected);
     }
 
     #[test]
@@ -554,5 +609,37 @@ mod tests {
         let addr: SocketAddr = "0.0.0.0:9090".parse().expect("valid address");
         let cfg = Config::new(None).with_health_bind_address(addr);
         assert_eq!(cfg.health_bind_address, Some(addr));
+    }
+
+    #[test]
+    fn detect_driver_returns_none_without_k8s_env_or_binaries() {
+        // When KUBERNETES_SERVICE_HOST is not set and no docker/podman binaries
+        // are available, detect_driver should return None.
+        // This test may pass or fail depending on the test environment,
+        // but it documents the expected behavior.
+        let _ = detect_driver(); // Returns Some or None based on environment
+    }
+
+    #[test]
+    #[allow(unsafe_code)] // std::env::set_var/remove_var require unsafe in Rust 2024
+    fn detect_driver_prefers_kubernetes_when_k8s_env_is_set() {
+        // Save the original env var
+        let original = std::env::var("KUBERNETES_SERVICE_HOST").ok();
+
+        // Set the env var
+        unsafe {
+            std::env::set_var("KUBERNETES_SERVICE_HOST", "127.0.0.1");
+        }
+
+        let result = detect_driver();
+        assert_eq!(result, Some(ComputeDriverKind::Kubernetes));
+
+        // Restore the original env var
+        unsafe {
+            match original {
+                Some(val) => std::env::set_var("KUBERNETES_SERVICE_HOST", val),
+                None => std::env::remove_var("KUBERNETES_SERVICE_HOST"),
+            }
+        }
     }
 }

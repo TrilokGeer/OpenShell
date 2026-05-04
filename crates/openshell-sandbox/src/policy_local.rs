@@ -562,6 +562,7 @@ fn network_endpoint_from_json(
                 path: rule.allow.path,
                 command: rule.allow.command,
                 query: HashMap::new(),
+                ..Default::default()
             }),
         })
         .collect();
@@ -573,6 +574,7 @@ fn network_endpoint_from_json(
             path: rule.path,
             command: rule.command,
             query: HashMap::new(),
+            ..Default::default()
         })
         .collect();
 
@@ -588,6 +590,7 @@ fn network_endpoint_from_json(
         ports,
         deny_rules,
         allow_encoded_slash: endpoint.allow_encoded_slash,
+        ..Default::default()
     })
 }
 

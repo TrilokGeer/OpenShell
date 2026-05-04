@@ -29,6 +29,7 @@ All paths are relative to `crates/openshell-sandbox/src/`.
 | `bypass_monitor.rs` | Background `/dev/kmsg` reader for iptables bypass detection events |
 | `sandbox/linux/netns.rs` | Network namespace creation, veth pair setup, bypass detection iptables rules, cleanup on drop |
 | `l7/mod.rs` | L7 types (`L7Protocol`, `TlsMode`, `EnforcementMode`, `L7EndpointConfig`), config parsing, validation, access preset expansion, deprecated `tls` value handling |
+| `l7/graphql.rs` | GraphQL-over-HTTP request classifier, body buffering, operation/root-field extraction, and persisted-query metadata handling |
 | `l7/inference.rs` | Inference API pattern detection (`detect_inference_pattern()`), HTTP request/response parsing and formatting for intercepted inference connections |
 | `l7/tls.rs` | Ephemeral CA generation (`SandboxCa`), per-hostname leaf cert cache (`CertCache`), TLS termination/connection helpers, `looks_like_tls()` auto-detection |
 | `l7/relay.rs` | Protocol-aware bidirectional relay with per-request OPA evaluation, credential-injection-only passthrough relay |
@@ -292,18 +293,22 @@ The proxy calls `evaluate_network_action()` (not `evaluate_network()`) as its ma
 
 ### L7 endpoint config query
 
-After L4 allows a connection, `query_endpoint_config(input)` evaluates `data.openshell.sandbox.matched_endpoint_config` to get the full endpoint object. If the endpoint has a `protocol` field, `l7::parse_l7_config()` extracts the L7 config for protocol-aware inspection.
+After L4 allows a connection, `query_endpoint_config_with_generation(input)` evaluates `data.openshell.sandbox.matched_endpoint_config` to get the full endpoint object and the policy generation used for the query. If the endpoint has a `protocol` field, `l7::parse_l7_config()` extracts the L7 config for protocol-aware inspection.
 
 ### Engine cloning for L7
 
-`clone_engine_for_tunnel()` clones the inner `regorus::Engine`. With the `arc` feature, this shares compiled policy via `Arc` and only duplicates interpreter state (microseconds). The cloned engine is wrapped in its own `std::sync::Mutex` and used by the L7 relay without contention on the main engine.
+`clone_engine_for_tunnel(expected_generation)` clones the inner `regorus::Engine` only if the current policy generation still matches the endpoint config generation captured above. With the `arc` feature, this shares compiled policy via `Arc` and only duplicates interpreter state (microseconds). The cloned engine is wrapped in a generation-bound `TunnelPolicyEngine` and used by the L7 relay without contention on the main engine.
+
+The L7 relay checks the captured generation before parsing, evaluating, and forwarding each request. If a policy reload has advanced the shared generation, the relay closes the tunnel before forwarding more bytes. This applies live policy changes to the next L7 request on a keep-alive tunnel and avoids pairing stale endpoint config with a newer policy engine. HTTP passthrough tunnels without endpoint `protocol` are also generation-bound so credential-injection-only keep-alive tunnels close after a reload before forwarding another request.
+
+Raw streams are connection-scoped and outside the L7 live-reload guarantee. This includes `tls: skip`, binary/non-HTTP CONNECT tunnels, SQL audit fallback passthrough, HTTP upgrades such as WebSocket after `101 Switching Protocols`, and already-forwarded long-lived response bodies such as SSE. Policy reloads affect the next connection or the next parsed HTTP request; they do not interrupt raw byte streams that have already moved outside the request parser.
 
 ### Hot reload
 
 Two reload methods exist:
 
 - **`reload(policy, data_yaml)`**: Builds a new engine from raw Rego + YAML strings and atomically replaces the inner engine. Used in tests and by the file-mode path.
-- **`reload_from_proto(proto)`**: Builds a new engine through the same validated pipeline as `from_proto()` -- proto-to-JSON conversion, L7 validation, access preset expansion -- then atomically swaps the inner `regorus::Engine`. On success, all subsequent `evaluate_network_action()` and `query_endpoint_config()` calls use the new policy. On failure (e.g., L7 validation errors), the previous engine is untouched (last-known-good behavior). This is the method used by the policy poll loop for live reloads in gRPC mode.
+- **`reload_from_proto(proto)`**: Builds a new engine through the same validated pipeline as `from_proto()` -- proto-to-JSON conversion, L7 validation, access preset expansion -- then atomically swaps the inner `regorus::Engine`. On success, all subsequent `evaluate_network_action()` and `query_endpoint_config()` calls use the new policy, and the engine generation increments so active L7 tunnels close before forwarding another request under stale state. On failure (e.g., L7 validation errors), the previous engine and generation are untouched (last-known-good behavior). This is the method used by the policy poll loop for live reloads in gRPC mode.
 
 Both methods hold the `Mutex` only for the final swap (`*engine = new_engine`), so evaluation is blocked for only the duration of a pointer-sized assignment.
 
@@ -962,7 +967,7 @@ flowchart TD
 
 After a CONNECT is allowed, the SSRF check passes, and the upstream TCP connection is established, the proxy determines how to handle the tunnel traffic. TLS detection is automatic — the proxy peeks the first bytes of the client stream to decide.
 
-1. **Query L7 config**: `query_l7_config()` asks the OPA engine for `matched_endpoint_config`. If the endpoint has a `protocol` field, parse it into `L7EndpointConfig`.
+1. **Query L7 route**: `query_l7_route_snapshot()` asks the OPA engine for `matched_endpoint_config` and the current policy generation. If the endpoint has a `protocol` field, parse it into a generation-bound `L7ConfigSnapshot`. If the endpoint has no `protocol`, retain the generation for HTTP passthrough keep-alive tunnels.
 
 2. **Check for `tls: skip`**: If the endpoint has `tls: skip`, bypass all auto-detection and relay raw bytes via `copy_bidirectional()`. This is the escape hatch for client-cert mTLS or non-standard protocols.
 
@@ -970,15 +975,15 @@ After a CONNECT is allowed, the SSRF check passes, and the upstream TCP connecti
 
 4. **TLS detected** (`is_tls = true`):
    - Terminate TLS unconditionally via `tls_terminate_client()` + `tls_connect_upstream()`. This happens for all HTTPS endpoints, not just those with L7 config.
-   - If L7 config is present: clone the OPA engine (`clone_engine_for_tunnel()`), run `relay_with_inspection()` for per-request policy evaluation.
-   - If no L7 config: run `relay_passthrough_with_credentials()` — parses HTTP minimally to inject credentials (via `SecretResolver`) and log requests, but does not evaluate L7 OPA rules. This enables credential injection on all HTTPS endpoints without requiring `protocol` in the policy.
+   - If L7 config is present: clone the OPA engine for the captured generation (`clone_engine_for_tunnel(generation)`), run `relay_with_inspection()` for per-request policy evaluation. If the generation changed between config lookup and clone, close the tunnel before inspection.
+   - If no L7 config: run `relay_passthrough_with_credentials()` — parses HTTP minimally to inject credentials (via `SecretResolver`) and log requests, but does not evaluate L7 OPA rules. The passthrough relay is bound to the policy generation captured at connection setup and closes before forwarding another request after a reload. This enables credential injection on all HTTPS endpoints without requiring `protocol` in the policy.
    - If TLS state is not configured: fall back to raw `copy_bidirectional()` with a warning.
 
 5. **Plaintext HTTP detected** (`is_http = true`, `is_tls = false`):
-   - If L7 config present: clone OPA engine, run `relay_with_inspection()` directly on the plaintext streams.
-   - If no L7 config: run `relay_passthrough_with_credentials()` for credential injection and observability.
+   - If L7 config present: clone the OPA engine for the captured generation, run `relay_with_inspection()` directly on the plaintext streams.
+   - If no L7 config: run `relay_passthrough_with_credentials()` for credential injection and observability, with the same per-request generation guard.
 
-6. **Neither TLS nor HTTP**: Raw `copy_bidirectional()` tunnel (binary protocols, SSH-over-CONNECT, etc.).
+6. **Neither TLS nor HTTP**: Raw `copy_bidirectional()` tunnel (binary protocols, SSH-over-CONNECT, etc.). These raw streams are connection-scoped and continue until either side closes; live policy reload does not interrupt them.
 
 ```mermaid
 flowchart TD
@@ -1002,7 +1007,7 @@ flowchart TD
 
 **Files:** `crates/openshell-sandbox/src/l7/`
 
-The L7 subsystem inspects application-layer traffic within CONNECT tunnels. Instead of raw `copy_bidirectional`, each request is parsed, evaluated against OPA rules, and either forwarded or blocked.
+The L7 subsystem inspects application-layer traffic within CONNECT tunnels. Instead of raw `copy_bidirectional`, each request is parsed, evaluated against OPA rules, and either forwarded or blocked. The relay uses a generation-bound policy snapshot; after a successful policy reload, an existing L7 keep-alive tunnel closes before forwarding another request. Once an HTTP request has upgraded into a raw stream, or when a response body is a long-lived stream, that stream is connection-scoped and is not interrupted by L7 live reload.
 
 ### Architecture
 
@@ -1024,12 +1029,12 @@ flowchart LR
 
 | Type | Definition | Purpose |
 |------|-----------|---------|
-| `L7Protocol` | `Rest`, `Sql` | Supported application protocols |
+| `L7Protocol` | `Rest`, `Graphql`, `Sql` | Supported application protocols |
 | `TlsMode` | `Auto` (default), `Skip` | TLS handling strategy — `Auto` peeks first bytes and terminates if TLS is detected; `Skip` bypasses detection entirely |
 | `EnforcementMode` | `Audit`, `Enforce` | What to do on L7 deny (log-only vs block) |
-| `L7EndpointConfig` | `{ protocol, tls, enforcement, allow_encoded_slash }` | Per-endpoint L7 configuration |
+| `L7EndpointConfig` | `{ protocol, path, tls, enforcement, allow_encoded_slash, graphql_max_body_bytes }` | Per-endpoint L7 configuration, including optional path scoping for shared host:port APIs |
 | `L7Decision` | `{ allowed, reason, matched_rule }` | Result of L7 evaluation |
-| `L7RequestInfo` | `{ action, target, query_params }` | HTTP method, path, and decoded query multimap for policy evaluation |
+| `L7RequestInfo` | `{ action, target, query_params, graphql }` | HTTP method, path, decoded query multimap, and optional GraphQL classification for policy evaluation |
 
 ### Access presets
 
@@ -1037,9 +1042,9 @@ Policy data supports shorthand `access` presets that expand into explicit `rules
 
 | Preset | Expands to |
 |--------|-----------|
-| `read-only` | `GET **`, `HEAD **`, `OPTIONS **` |
-| `read-write` | `GET **`, `HEAD **`, `OPTIONS **`, `POST **`, `PUT **`, `PATCH **` |
-| `full` | `* **` (all methods, all paths) |
+| `read-only` | REST: `GET **`, `HEAD **`, `OPTIONS **`; GraphQL: `query` |
+| `read-write` | REST: `GET **`, `HEAD **`, `OPTIONS **`, `POST **`, `PUT **`, `PATCH **`; GraphQL: `query`, `mutation` |
+| `full` | REST: `* **`; GraphQL: `operation_type: "*"` |
 
 Expansion happens in `expand_access_presets()` before the Rego engine loads the data. The `rules` and `access` fields are mutually exclusive (validated at startup).
 
@@ -1051,14 +1056,17 @@ Expansion happens in `expand_access_presets()` before the Rego engine loads the 
 
 - `rules` and `access` both specified on same endpoint
 - `protocol` specified without `rules` or `access`
+- unknown `protocol`
 - `protocol: sql` with `enforcement: enforce` (SQL parsing not available in v1)
 - Empty `rules` array (would deny all traffic)
+- invalid GraphQL operation types, persisted-query mode, body limit, or rule shape
 
 **Warnings** (logged):
 
 - `tls: terminate` or `tls: passthrough` on any endpoint (deprecated — TLS termination is now automatic; use `tls: skip` to disable)
 - `tls: skip` with L7 rules on port 443 (L7 inspection cannot work on encrypted traffic)
 - Unknown HTTP method in rules
+- GraphQL-specific fields on non-GraphQL endpoints
 
 ### TLS termination (auto-detect)
 
@@ -1233,17 +1241,27 @@ Implements `L7Provider` for HTTP/1.1:
 
 - **`looks_like_http()`**: Protocol detection via first-byte peek -- checks for standard HTTP method prefixes (GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, CONNECT, TRACE).
 
+### GraphQL protocol classifier
+
+**File:** `crates/openshell-sandbox/src/l7/graphql.rs`
+
+GraphQL inspection reuses the HTTP parser, then buffers the request body up to `graphql_max_body_bytes` for classification. It supports `GET` and `POST` GraphQL-over-HTTP envelopes, JSON batches, named operations, root fragment expansion, Apollo persisted-query hashes, and saved-query IDs (`id`, `documentId`, `queryId`). The classifier emits `GraphqlRequestInfo` with operation type, optional operation name, root fields, and persisted-query identifiers.
+
+Hash-only or saved-query-only requests cannot be parsed into operation fields. They are denied unless the endpoint sets `persisted_queries: allow_registered` and provides a trusted `graphql_persisted_queries` entry for the hash or ID. Batch requests are fail-closed: any malformed, denied, or unregistered operation denies the whole HTTP request.
+
 ### Per-request L7 evaluation
 
 `relay_with_inspection()` in `crates/openshell-sandbox/src/l7/relay.rs` is the main relay loop:
 
 1. Parse one HTTP request from client via the provider. Parser and path-canonicalization failures close the connection and emit a denied OCSF network event with the rejection reason in `status_detail`.
 2. Resolve credential placeholders in the request target via `rewrite_target_for_eval()`. OPA receives the redacted path (`[CREDENTIAL]` markers); the resolved path goes only to upstream. If resolution fails, return HTTP 500 and close the connection.
-3. Build L7 input JSON with `request.method`, the **redacted** `request.path`, `request.query_params`, plus the CONNECT-level context (host, port, binary, ancestors, cmdline)
+3. Build L7 input JSON with `request.method`, the **redacted** `request.path`, `request.query_params`, optional `request.graphql`, plus the CONNECT-level context (host, port, binary, ancestors, cmdline)
 4. Evaluate `data.openshell.sandbox.allow_request` and `data.openshell.sandbox.request_deny_reason`
 5. Log the L7 decision (tagged `L7_REQUEST`) using the redacted target — real credential values never appear in logs
 6. If allowed (or audit mode): relay request to upstream via `relay_http_request_with_resolver()` (which rewrites all remaining credential placeholders in headers, query parameters, path segments, and Basic auth tokens) and relay the response back to client, then loop
 7. If denied in enforce mode: send 403 (using redacted target in the response body) and close the connection
+
+Before parsing, before evaluation, and before forwarding each request, the relay checks whether its captured policy generation still matches the shared engine generation. If not, it emits a denied OCSF network event and closes the tunnel without forwarding the request.
 
 ## Process Identity
 

@@ -187,10 +187,10 @@ cargo run -p openshell-cli --features bundled-z3 -- sandbox list
 This deploys a full K3s cluster with OIDC enforcement and tests sandbox
 creation, RBAC, login/logout, and token expiry.
 
-### 4a. Bootstrap the cluster with OIDC
+### 4a. Start the cluster with OIDC
 
 Keycloak runs on the host. The K3s container reaches it via the host IP.
-The `OPENSHELL_OIDC_ISSUER` env var tells the deploy script to pass the
+The `OPENSHELL_OIDC_ISSUER` env var tells the cluster task to pass the
 issuer to the Helm chart so the gateway starts with JWT validation enabled.
 
 ```bash
@@ -214,8 +214,16 @@ docker exec $CONTAINER kubectl -n openshell logs openshell-0 | grep OIDC
 
 ### 4b. Login to the gateway
 
-The bootstrap step above configures the gateway metadata with the OIDC
-issuer automatically. Authenticate with Keycloak:
+If the cluster task did not register gateway metadata automatically, register
+the running gateway before login:
+
+```bash
+openshell gateway add http://127.0.0.1:8080 \
+  --oidc-issuer http://localhost:8180/realms/openshell \
+  --oidc-scopes "openshell:all"
+```
+
+Authenticate with Keycloak:
 
 ```bash
 openshell gateway login
@@ -436,7 +444,7 @@ openshell gateway add http://127.0.0.1:8080 \
   --oidc-scopes "sandbox:read sandbox:write"
 ```
 
-Or for K3s testing, pass `OPENSHELL_OIDC_SCOPES` during bootstrap:
+Or for K3s testing, pass `OPENSHELL_OIDC_SCOPES` during cluster startup:
 
 ```bash
 HOST_IP=$(hostname -I | awk '{print $1}')

@@ -93,7 +93,7 @@ The CLI also treats an explicit `http://...` registration as plaintext mode:
 openshell gateway add http://127.0.0.1:8080 --local
 ```
 
-This stores `auth_mode = "plaintext"`, skips mTLS certificate extraction, and bypasses the edge browser-auth flow.
+This stores `auth_mode = "plaintext"`, skips mTLS client certificate lookup, and bypasses the edge browser-auth flow.
 
 ## File System Layout
 

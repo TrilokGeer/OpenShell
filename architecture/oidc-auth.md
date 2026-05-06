@@ -276,7 +276,7 @@ Standard OIDC scopes (`openid`, `profile`, `email`, `offline_access`) are filter
 
 ### CLI Scope Requests
 
-The `--oidc-scopes` flag on `gateway add` and `gateway start` is stored in gateway metadata and included in OAuth2 token requests:
+The `--oidc-scopes` flag on `gateway add` is stored in gateway metadata and included in OAuth2 token requests:
 
 - **Browser flow**: appended to the `scope` parameter alongside `openid`
 - **Client credentials flow**: sent as-is (without `openid`, which is inappropriate for service tokens)
@@ -313,22 +313,20 @@ These flags configure JWT validation on the `openshell-server` binary:
 
 When `--oidc-issuer` is not set, OIDC validation is disabled and the server falls back to mTLS-only or plaintext behavior.
 
-### Gateway Start Flags (CLI)
+### Gateway Runtime Flags
 
-The `openshell gateway start` command exposes flags that configure both the server and the local gateway metadata:
+OIDC validation is configured on the gateway service, either through package-managed service configuration, direct `openshell-server` flags, or Helm values:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--oidc-issuer` | (none) | OIDC issuer URL; passed to the server binary |
-| `--oidc-audience` | `openshell-cli` | Expected `aud` claim; passed to the server binary |
-| `--oidc-client-id` | `openshell-cli` | Client ID stored in gateway metadata for CLI login flows |
-| `--oidc-roles-claim` | (none) | Passed to the server binary if set |
-| `--oidc-admin-role` | (none) | Passed to the server binary if set |
-| `--oidc-user-role` | (none) | Passed to the server binary if set |
-| `--oidc-scopes-claim` | (none) | Passed to the server binary; enables scope enforcement |
-| `--oidc-scopes` | (none) | Stored in gateway metadata; included in CLI token requests |
+| `--oidc-issuer` | (none) | OIDC issuer URL |
+| `--oidc-audience` | `openshell-cli` | Expected `aud` claim |
+| `--oidc-roles-claim` | `realm_access.roles` | Dot-separated path to roles array |
+| `--oidc-admin-role` | `openshell-admin` | Role name that grants admin access |
+| `--oidc-user-role` | `openshell-user` | Role name that grants standard user access |
+| `--oidc-scopes-claim` | (empty) | Claim path for scopes; enables scope enforcement |
 
-The `--oidc-client-id` flag is **not** a server flag — it is stored in gateway metadata and used by the CLI during login. The `--oidc-audience` flag is both a server flag (for JWT validation) and stored in metadata (for token requests).
+The CLI no longer starts or stops gateways. After the service is running, `openshell gateway add --oidc-*` stores client-side login metadata such as client ID, audience, and requested scopes.
 
 ### Helm Values
 
@@ -350,7 +348,7 @@ The server exposes `GET /auth/oidc-config` which returns the configured OIDC iss
 ### Keycloak
 
 ```bash
-openshell gateway start \
+openshell-server \
   --oidc-issuer http://keycloak:8180/realms/openshell
 # Defaults work: realm_access.roles, openshell-admin, openshell-user
 ```
@@ -360,10 +358,9 @@ openshell gateway start \
 Register an app in Azure Portal with app roles `OpenShell.Admin` and `OpenShell.User`. With Entra ID the client ID (the SPA/public app registration) and audience (the API app registration, e.g. `api://openshell`) are typically different:
 
 ```bash
-openshell gateway start \
+openshell-server \
   --oidc-issuer https://login.microsoftonline.com/{tenant-id}/v2.0 \
   --oidc-audience api://openshell \
-  --oidc-client-id {client-id} \
   --oidc-roles-claim roles \
   --oidc-admin-role OpenShell.Admin \
   --oidc-user-role OpenShell.User
@@ -383,7 +380,7 @@ openshell gateway add https://gateway:8080 \
 Create an authorization server with a `groups` claim, then:
 
 ```bash
-openshell gateway start \
+openshell-server \
   --oidc-issuer https://dev-xxxxx.okta.com/oauth2/default \
   --oidc-roles-claim groups \
   --oidc-admin-role openshell-admin \
@@ -395,7 +392,7 @@ openshell gateway start \
 GitHub's OIDC tokens (from Actions) don't carry roles. Use empty role names to skip RBAC — any valid GitHub JWT is authorized:
 
 ```bash
-openshell gateway start \
+openshell-server \
   --oidc-issuer https://token.actions.githubusercontent.com \
   --oidc-audience https://github.com/{org} \
   --oidc-admin-role "" \
@@ -420,22 +417,6 @@ openshell gateway add http://gateway:8080 \
   --oidc-issuer https://login.microsoftonline.com/{tenant-id}/v2.0 \
   --oidc-client-id {client-id} \
   --oidc-audience api://openshell
-```
-
-### Start a K3s Gateway with OIDC
-
-```bash
-openshell gateway start \
-  --oidc-issuer http://keycloak:8180/realms/openshell \
-  --plaintext
-
-# With RBAC configuration:
-openshell gateway start \
-  --oidc-issuer http://keycloak:8180/realms/openshell \
-  --oidc-client-id openshell-cli \
-  --oidc-roles-claim realm_access.roles \
-  --oidc-admin-role openshell-admin \
-  --oidc-user-role openshell-user
 ```
 
 ### Authenticate
@@ -533,7 +514,6 @@ The CLI determines which auth mode to use based on `auth_mode` in gateway metada
 | CLI gateway commands | `crates/openshell-cli/src/run.rs` (`gateway_add`, `gateway_login`) |
 | Token storage | `crates/openshell-bootstrap/src/oidc_token.rs` |
 | Gateway metadata | `crates/openshell-bootstrap/src/metadata.rs` |
-| Bootstrap pipeline | `crates/openshell-bootstrap/src/lib.rs`, `docker.rs` |
 | K3s entrypoint | `deploy/docker/cluster-entrypoint.sh` |
 | HelmChart template | `deploy/kube/manifests/openshell-helmchart.yaml` |
 | Helm values | `deploy/helm/openshell/values.yaml` |

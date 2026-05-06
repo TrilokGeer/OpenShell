@@ -9,7 +9,7 @@ The `--from` flag accepts four kinds of input:
 | Input | Example | Behavior |
 |-------|---------|----------|
 | **Community sandbox name** | `--from openclaw` | Resolves to `ghcr.io/nvidia/openshell-community/sandboxes/openclaw:latest` |
-| **Dockerfile path** | `--from ./Dockerfile` | Builds the image locally, makes it available to the local gateway when needed, then creates the sandbox |
+| **Dockerfile path** | `--from ./Dockerfile` | Builds the image into the local Docker daemon, then creates the sandbox |
 | **Directory with Dockerfile** | `--from ./my-sandbox/` | Uses the directory as the build context |
 | **Full image reference** | `--from myregistry.com/img:tag` | Uses the image directly |
 
@@ -34,8 +34,7 @@ The community registry prefix defaults to `ghcr.io/nvidia/openshell-community/sa
 When `--from` points to a Dockerfile or directory, the CLI:
 
 1. Builds the image locally via the Docker daemon (respecting `.dockerignore`).
-2. Makes it available to the local gateway runtime when a managed local gateway is running; otherwise keeps the tag in the host Docker daemon for standalone local drivers.
-3. Creates the sandbox with the resulting image tag.
+2. Creates the sandbox with the resulting image tag.
 
 The build step aborts with a clear error if the Docker build stream stays silent for longer than `OPENSHELL_BUILD_NO_PROGRESS_TIMEOUT_SECS` seconds (default 1800). This is a guard against deadlocked container runtimes — most commonly an under-provisioned VM (e.g. macOS Colima with the default 2 vCPU / 2 GiB) where BuildKit can stop emitting events partway through a multi-step build and never recover. Raise the value if a legitimate build step is just quiet, or lower it for tighter CI budgets.
 
@@ -110,14 +109,14 @@ The `openshell-sandbox` supervisor adapts to arbitrary environments:
 |----------|-----------|
 | Unified `--from` flag | Single entry point for community names, Dockerfiles, directories, and image refs — removes the need to know registry paths |
 | Community name resolution | Bare names like `openclaw` expand to the GHCR community registry, making the common case simple |
-| Auto build/import for Dockerfiles | Eliminates the two-step build/import + create workflow for local gateway development |
+| Auto build for Dockerfiles | Eliminates the two-step build + create workflow for local gateway development |
 | `OPENSHELL_COMMUNITY_REGISTRY` env var | Allows organizations to host their own community sandbox registry |
 | Driver-owned supervisor delivery | Each compute driver decides how to deliver `openshell-sandbox` for its runtime. |
 | Read-only supervisor delivery | The supervisor should be mounted or packaged read-only where the driver supports it, and the startup seccomp prelude blocks remount syscalls that would otherwise reopen it for writes once privileged bootstrap has completed. |
 | Command override | Ensures `openshell-sandbox` is the entrypoint regardless of the image's default CMD |
 | Clear `run_as_user/group` for custom images | Prevents startup failure when the image lacks the default `sandbox` user |
 | Non-fatal log file init | `/var/log/openshell.log` may be unwritable in arbitrary images; falls back to stdout |
-| Local gateway image availability | Dockerfile sources build into the host Docker daemon; managed local gateway deployments import the tag so the selected runtime can resolve it. |
+| Local gateway image availability | Dockerfile sources build into the host Docker daemon; package-managed local gateways and their compute drivers resolve the resulting tag from that daemon. |
 | Optional `iptables` for bypass detection | Core network isolation works via routing alone (`iproute2`); `iptables` only adds fast-fail (`ECONNREFUSED`) and diagnostic LOG entries. Making it optional avoids hard failures in minimal images that lack `iptables` while giving better UX when it is available. |
 
 ## Limitations

@@ -44,7 +44,7 @@ Events are emitted at four denial points in the proxy:
 | FORWARD OPA deny | `forward` | `proxy.rs` | Forward proxy policy deny |
 | FORWARD SSRF deny | `ssrf` | `proxy.rs` | Forward proxy SSRF check failed |
 
-L7 (per-request) denials from `l7/relay.rs` are captured via tracing in the current implementation, with structured channel support planned for issue #205.
+L7 (per-request) denials from `l7/rest.rs` are surfaced as a structured 403 response body — the agent-readable contract specified in [RFC 0001](../rfc/0001-agent-driven-policy-management.md) and delivered against issue #1090. The body carries `layer`, `method`, `path`, `host`, `port`, `binary`, `rule_missing`, and `next_steps` fields. The LLM-powered enrichment that wraps these structured denials remains future work under issue #205.
 
 ### Mechanistic Mapper (Sandbox Side)
 

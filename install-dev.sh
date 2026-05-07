@@ -2,11 +2,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Install an OpenShell Debian package from a GitHub release.
+# Install the OpenShell development build from a GitHub release.
 #
-# This script defaults to the rolling `dev` release and supports Debian
-# packages on Linux amd64 and arm64 only. The package installs the CLI,
-# gateway, and VM compute driver.
+# Linux keeps the Debian package install path. Apple Silicon macOS installs the
+# generated Homebrew formula from the selected release, so Homebrew owns the
+# binary layout and launchd service lifecycle.
 #
 set -e
 
@@ -15,9 +15,14 @@ REPO="NVIDIA/OpenShell"
 GITHUB_URL="https://github.com/${REPO}"
 RELEASE_TAG="${OPENSHELL_VERSION:-dev}"
 CHECKSUMS_NAME="openshell-checksums-sha256.txt"
+LOCAL_GATEWAY_PORT="17670"
 
 info() {
   printf '%s: %s\n' "$APP_NAME" "$*" >&2
+}
+
+warn() {
+  printf '%s: warning: %s\n' "$APP_NAME" "$*" >&2
 }
 
 error() {
@@ -27,7 +32,7 @@ error() {
 
 usage() {
   cat <<EOF
-install-dev.sh - Install the OpenShell Debian package
+install-dev.sh - Install the OpenShell development build
 
 USAGE:
     curl -fsSL https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install-dev.sh -o install-dev.sh
@@ -45,8 +50,9 @@ NOTES:
     This installs the selected release from:
     ${GITHUB_URL}/releases/tag/${RELEASE_TAG}
 
-    Only Linux amd64 and arm64 Debian packages are supported right now. The
-    Debian package includes openshell, openshell-gateway, and openshell-driver-vm.
+    Linux installs the Debian package on amd64 and arm64.
+    macOS installs the release Homebrew formula on Apple Silicon and starts a
+    brew services-backed local gateway.
 EOF
 }
 
@@ -67,11 +73,12 @@ download() {
 }
 
 download_release_asset() {
-  _filename="$1"
-  _output="$2"
+  _tag="$1"
+  _filename="$2"
+  _output="$3"
 
   if curl -fLs --retry 3 --max-redirs 5 -o "$_output" \
-    "${GITHUB_URL}/releases/download/${RELEASE_TAG}/${_filename}"; then
+    "${GITHUB_URL}/releases/download/${_tag}/${_filename}"; then
     return 0
   fi
 
@@ -81,7 +88,7 @@ download_release_asset() {
   # entry for the original package filename.
   _normalized="$(printf '%s' "$_filename" | tr '~' '.')"
   if [ "$_normalized" != "$_filename" ]; then
-    if download "${GITHUB_URL}/releases/download/${RELEASE_TAG}/${_normalized}" "$_output"; then
+    if download "${GITHUB_URL}/releases/download/${_tag}/${_normalized}" "$_output"; then
       info "using GitHub-normalized asset name ${_normalized}"
       return 0
     fi
@@ -118,8 +125,21 @@ user_home() {
     fi
   fi
 
+  if [ "$(uname -s)" = "Darwin" ] && has_cmd dscl; then
+    _home="$(dscl . -read "/Users/${_user}" NFSHomeDirectory 2>/dev/null | awk '{ print $2 }')"
+    if [ -n "$_home" ]; then
+      echo "$_home"
+      return 0
+    fi
+  fi
+
   if [ "$(id -un)" = "$_user" ]; then
     echo "${HOME:-}"
+    return 0
+  fi
+
+  if [ "$(uname -s)" = "Darwin" ]; then
+    echo "/Users/${_user}"
     return 0
   fi
 
@@ -127,6 +147,17 @@ user_home() {
 }
 
 as_target_user() {
+  if [ "${PLATFORM:-}" = "darwin" ]; then
+    if [ "$(id -u)" -eq "$TARGET_UID" ]; then
+      env HOME="$TARGET_HOME" "$@"
+    elif has_cmd sudo; then
+      sudo -u "$TARGET_USER" env HOME="$TARGET_HOME" "$@"
+    else
+      error "cannot run commands as ${TARGET_USER}; install sudo or run as ${TARGET_USER}"
+    fi
+    return
+  fi
+
   _bus="unix:path=${TARGET_RUNTIME_DIR}/bus"
   if [ "$(id -u)" -eq "$TARGET_UID" ]; then
     env HOME="$TARGET_HOME" XDG_RUNTIME_DIR="$TARGET_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="$_bus" "$@"
@@ -139,12 +170,41 @@ as_target_user() {
   fi
 }
 
-check_platform() {
-  if [ "$(uname -s)" != "Linux" ]; then
-    error "unsupported OS: $(uname -s); dev Debian packages require Linux"
-  fi
+detect_platform() {
+  case "$(uname -s)" in
+    Linux)
+      echo "linux"
+      ;;
+    Darwin)
+      echo "darwin"
+      ;;
+    *)
+      error "unsupported OS: $(uname -s); dev builds support Linux and macOS"
+      ;;
+  esac
+}
 
+check_linux_platform() {
   require_cmd dpkg
+}
+
+check_macos_platform() {
+  _arch="$(uname -m)"
+
+  case "$_arch" in
+    arm64|aarch64)
+      ;;
+    x86_64|amd64)
+      error "Intel macOS is not supported because no x86_64-apple-darwin dev assets are published"
+      ;;
+    *)
+      error "no macOS dev build is published for architecture: ${_arch}"
+      ;;
+  esac
+
+  if ! as_target_user brew --version >/dev/null 2>&1; then
+    error "Homebrew is required for macOS dev installs; install it from https://brew.sh"
+  fi
 }
 
 get_deb_arch() {
@@ -233,6 +293,7 @@ remove_local_gateway_registration() {
 
   # The install-dev gateway is a user service. Replace the CLI registration
   # directly instead of asking `gateway destroy` to tear down Docker resources.
+  # shellcheck disable=SC2016
   as_target_user sh -c '
     config_dir=$1
     rm -rf "${config_dir}/gateways/local"
@@ -244,7 +305,9 @@ remove_local_gateway_registration() {
 }
 
 register_local_gateway() {
-  if _add_output="$(as_target_user openshell gateway add http://127.0.0.1:17670 --local --name local 2>&1)"; then
+  _register_bin="${OPENSHELL_REGISTER_BIN:-openshell}"
+
+  if _add_output="$(as_target_user "$_register_bin" gateway add "http://127.0.0.1:${LOCAL_GATEWAY_PORT}" --local --name local 2>&1)"; then
     [ -z "$_add_output" ] || printf '%s\n' "$_add_output" >&2
     return 0
   else
@@ -255,7 +318,7 @@ register_local_gateway() {
     *"already exists"*)
       info "local gateway already exists; removing and re-adding it..."
       remove_local_gateway_registration
-      as_target_user openshell gateway add http://127.0.0.1:17670 --local --name local
+      as_target_user "$_register_bin" gateway add "http://127.0.0.1:${LOCAL_GATEWAY_PORT}" --local --name local
       ;;
     *)
       printf '%s\n' "$_add_output" >&2
@@ -264,27 +327,9 @@ register_local_gateway() {
   esac
 }
 
-main() {
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --help)
-        usage
-        exit 0
-        ;;
-      *)
-        error "unknown option: $1"
-        ;;
-    esac
-    shift
-  done
+install_linux_deb() {
+  check_linux_platform
 
-  require_cmd curl
-  check_platform
-
-  TARGET_USER="$(target_user)"
-  TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || true)"
-  [ -n "$TARGET_UID" ] || error "cannot resolve uid for ${TARGET_USER}"
-  TARGET_HOME="$(user_home "$TARGET_USER")"
   if [ "$(id -u)" -eq "$TARGET_UID" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
     TARGET_RUNTIME_DIR="$XDG_RUNTIME_DIR"
   else
@@ -313,7 +358,7 @@ main() {
   info "selected ${_deb_file}"
 
   info "downloading ${_deb_file}..."
-  download_release_asset "$_deb_file" "$_deb_path" || {
+  download_release_asset "$RELEASE_TAG" "$_deb_file" "$_deb_path" || {
     error "failed to download ${_deb_url}"
   }
   chmod 0644 "$_deb_path"
@@ -325,6 +370,80 @@ main() {
   install_deb_package "$_deb_path"
   info "installed ${APP_NAME} package from ${RELEASE_TAG}"
   start_user_gateway
+}
+
+install_macos_homebrew() {
+  check_macos_platform
+
+  _tmpdir="$(mktemp -d)"
+  chmod 0755 "$_tmpdir"
+  trap 'rm -rf "$_tmpdir"' EXIT
+
+  _formula_file="${_tmpdir}/openshell.rb"
+  _formula_url="${GITHUB_URL}/releases/download/${RELEASE_TAG}/openshell.rb"
+
+  info "downloading Homebrew formula from ${_formula_url}..."
+  download_release_asset "$RELEASE_TAG" "openshell.rb" "$_formula_file" || {
+    error "failed to download ${_formula_url}; the selected release may not include a Homebrew formula"
+  }
+
+  if as_target_user brew list --formula openshell >/dev/null 2>&1; then
+    info "reinstalling OpenShell with Homebrew..."
+    as_target_user brew reinstall --formula "$_formula_file"
+  else
+    info "installing OpenShell with Homebrew..."
+    as_target_user brew install --formula "$_formula_file"
+  fi
+
+  info "restarting OpenShell Homebrew service..."
+  if ! as_target_user brew services restart openshell; then
+    warn "could not restart the OpenShell Homebrew service"
+    info "restart it later with: brew services restart openshell"
+    info "then register it with: openshell gateway add http://127.0.0.1:${LOCAL_GATEWAY_PORT} --local --name local"
+    return 0
+  fi
+
+  _brew_prefix="$(as_target_user brew --prefix 2>/dev/null || true)"
+  if [ -n "$_brew_prefix" ] && [ -x "${_brew_prefix}/bin/openshell" ]; then
+    OPENSHELL_REGISTER_BIN="${_brew_prefix}/bin/openshell"
+  fi
+
+  info "registering local gateway as ${TARGET_USER}..."
+  register_local_gateway
+}
+
+main() {
+  if [ "$#" -gt 0 ]; then
+    case "$1" in
+      --help)
+        usage
+        exit 0
+        ;;
+      *)
+        error "unknown option: $1"
+        ;;
+    esac
+  fi
+
+  require_cmd curl
+  PLATFORM="$(detect_platform)"
+
+  TARGET_USER="$(target_user)"
+  TARGET_UID="$(id -u "$TARGET_USER" 2>/dev/null || true)"
+  [ -n "$TARGET_UID" ] || error "cannot resolve uid for ${TARGET_USER}"
+  TARGET_HOME="$(user_home "$TARGET_USER")"
+
+  case "$PLATFORM" in
+    linux)
+      install_linux_deb
+      ;;
+    darwin)
+      install_macos_homebrew
+      ;;
+    *)
+      error "unsupported platform: ${PLATFORM}"
+      ;;
+  esac
 }
 
 main "$@"

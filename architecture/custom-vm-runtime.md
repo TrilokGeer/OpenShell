@@ -323,10 +323,11 @@ run `cargo build --release -p openshell-driver-vm`. The macOS driver is
 cross-compiled via osxcross (no macOS runner needed for the binary build —
 only for the kernel build).
 
-macOS driver binaries produced via osxcross are not codesigned. Local
-development builds are signed automatically by `tasks/scripts/gateway-vm.sh`
-(registered as `mise run gateway:vm`). Release tarball users on macOS must
-ad-hoc sign `openshell-driver-vm` before running VM sandboxes.
+macOS driver binaries produced via osxcross are not codesigned. Development
+builds are signed automatically by `tasks/scripts/gateway-vm.sh`
+(registered as `mise run gateway:vm`) and by the generated Homebrew formula
+when `install-dev.sh` installs the selected release on Apple Silicon macOS. A
+packaged release needs signing in CI.
 
 ## Rollout Strategy
 

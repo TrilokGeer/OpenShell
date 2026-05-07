@@ -162,7 +162,7 @@ jobs:
         run: uv sync
 
       - name: Cache Rust target and registry
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           shared-key: python-wheel-linux-${{ matrix.arch }}
           cache-directories: .cache/sccache
@@ -175,7 +175,7 @@ jobs:
           ls -la ${{ matrix.output_path }}
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-wheels-${{ matrix.artifact }}
           path: ${{ matrix.output_path }}
@@ -224,7 +224,7 @@ jobs:
           ls -la target/wheels/*.whl
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-wheels-macos
           path: target/wheels/*.whl
@@ -277,7 +277,7 @@ jobs:
         run: mise install --locked
 
       - name: Cache Rust target and registry
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           shared-key: cli-musl-${{ matrix.arch }}
           cache-directories: .cache/sccache
@@ -339,7 +339,7 @@ jobs:
           ls -lh artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-linux-${{ matrix.arch }}
           path: artifacts/*.tar.gz
@@ -404,7 +404,7 @@ jobs:
           ls -lh artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-macos
           path: artifacts/*.tar.gz
@@ -451,7 +451,7 @@ jobs:
         run: mise install --locked
 
       - name: Cache Rust target and registry
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           shared-key: gateway-binary-gnu-${{ matrix.arch }}
           cache-directories: .cache/sccache
@@ -488,7 +488,7 @@ jobs:
           ls -lh artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gateway-binary-linux-${{ matrix.arch }}
           path: artifacts/*.tar.gz
@@ -535,7 +535,7 @@ jobs:
         run: mise install --locked
 
       - name: Cache Rust target and registry
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           shared-key: supervisor-binary-gnu-${{ matrix.arch }}
           cache-directories: .cache/sccache
@@ -572,7 +572,7 @@ jobs:
           ls -lh artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: supervisor-binary-linux-${{ matrix.arch }}
           path: artifacts/*.tar.gz
@@ -641,7 +641,7 @@ jobs:
           ls -lh artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gateway-binary-macos
           path: artifacts/*.tar.gz
@@ -772,6 +772,9 @@ jobs:
             openshell-x86_64-unknown-linux-musl.tar.gz \
             openshell-aarch64-unknown-linux-musl.tar.gz \
             openshell-aarch64-apple-darwin.tar.gz \
+            openshell-driver-vm-x86_64-unknown-linux-gnu.tar.gz \
+            openshell-driver-vm-aarch64-unknown-linux-gnu.tar.gz \
+            openshell-driver-vm-aarch64-apple-darwin.tar.gz \
             openshell_*.deb \
             openshell-*.rpm \
             *.whl > openshell-checksums-sha256.txt
@@ -786,6 +789,15 @@ jobs:
             openshell-sandbox-aarch64-unknown-linux-gnu.tar.gz > openshell-sandbox-checksums-sha256.txt
           cat openshell-sandbox-checksums-sha256.txt
 
+      - name: Generate Homebrew formula
+        run: |
+          set -euo pipefail
+          python3 tasks/scripts/release.py generate-homebrew-formula \
+            --release-tag "${RELEASE_TAG}" \
+            --release-dir release \
+            --output release/openshell.rb
+          cat release/openshell.rb
+
       - name: Attest VM driver artifacts
         uses: actions/attest@v4
         with:
@@ -795,7 +807,7 @@ jobs:
             release/openshell-driver-vm-aarch64-apple-darwin.tar.gz
 
       - name: Prune removed VM checksum asset
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
@@ -847,6 +859,7 @@ jobs:
             release/openshell-driver-vm-aarch64-unknown-linux-gnu.tar.gz
             release/openshell-driver-vm-aarch64-apple-darwin.tar.gz
             release/*.whl
+            release/openshell.rb
             release/openshell-checksums-sha256.txt
             release/openshell-gateway-checksums-sha256.txt
             release/openshell-sandbox-checksums-sha256.txt
@@ -876,6 +889,24 @@ jobs:
           FERN_TOKEN: ${{ secrets.FERN_TOKEN }}
         working-directory: ./fern
         run: fern generate --docs
+
+  release-helm:
+    name: Release Helm Chart (OCI)
+    needs: [compute-versions, tag-ghcr-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: ./.github/actions/release-helm-oci
+        with:
+          chart-version: ${{ needs.compute-versions.outputs.semver }}
+          app-version: ${{ needs.compute-versions.outputs.semver }}
+          release-kind: public
 
   trigger-wheel-publish:
     name: Trigger Wheel Publish

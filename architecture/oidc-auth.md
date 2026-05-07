@@ -514,7 +514,6 @@ The CLI determines which auth mode to use based on `auth_mode` in gateway metada
 | CLI gateway commands | `crates/openshell-cli/src/run.rs` (`gateway_add`, `gateway_login`) |
 | Token storage | `crates/openshell-bootstrap/src/oidc_token.rs` |
 | Gateway metadata | `crates/openshell-bootstrap/src/metadata.rs` |
-| K3s entrypoint | `deploy/docker/cluster-entrypoint.sh` |
 | HelmChart template | `deploy/kube/manifests/openshell-helmchart.yaml` |
 | Helm values | `deploy/helm/openshell/values.yaml` |
 | Helm statefulset | `deploy/helm/openshell/templates/statefulset.yaml` |

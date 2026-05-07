@@ -1,7 +1,7 @@
 # OIDC Local Testing Guide
 
 Step-by-step instructions for testing OIDC/Keycloak authentication locally,
-including both standalone server testing and full end-to-end K3s testing.
+including both standalone server testing and full end-to-end Helm/k3d testing.
 
 ## Prerequisites
 
@@ -136,7 +136,7 @@ curl -s http://127.0.0.1:8080/auth/oidc-config | jq .
 # Expected: {"audience":"openshell-cli","issuer":"http://localhost:8180/realms/openshell"}
 ```
 
-Stop the standalone server (Ctrl+C) before proceeding to K3s testing.
+Stop the standalone server (Ctrl+C) before proceeding to Helm/k3d testing.
 
 ## 3. CLI OIDC Flow (Standalone)
 
@@ -182,33 +182,30 @@ cargo run -p openshell-cli --features bundled-z3 -- sandbox list
 # Expected: error (no token)
 ```
 
-## 4. End-to-End K3s Testing
+## 4. End-to-End Helm/k3d Testing
 
-This deploys a full K3s cluster with OIDC enforcement and tests sandbox
+This deploys a local k3d cluster with OIDC enforcement and tests sandbox
 creation, RBAC, login/logout, and token expiry.
 
-### 4a. Start the cluster with OIDC
+### 4a. Start the Helm deployment with OIDC
 
-Keycloak runs on the host. The K3s container reaches it via the host IP.
-The `OPENSHELL_OIDC_ISSUER` env var tells the cluster task to pass the
-issuer to the Helm chart so the gateway starts with JWT validation enabled.
+Use the Helm local development flow and include the Keycloak values overlay so
+the gateway starts with JWT validation enabled.
 
 ```bash
-HOST_IP=$(hostname -I | awk '{print $1}')
-OPENSHELL_OIDC_ISSUER="http://${HOST_IP}:8180/realms/openshell" \
-OPENSHELL_OIDC_SCOPES="openshell:all" \
-mise run cluster
+mise run helm:k3s:create
+mise run keycloak:k8s:setup
+mise run helm:skaffold:run
 ```
 
-Add `OPENSHELL_OIDC_SCOPES_CLAIM="scope"` to also enable scope enforcement.
-The `OPENSHELL_OIDC_SCOPES` value is stored in gateway metadata so `gateway login`
-requests these scopes automatically.
+Set `server.oidc.scopesClaim` in the Helm values to enable scope enforcement.
+Pass `--oidc-scopes` when registering the gateway so `gateway login` requests
+those scopes automatically.
 
-Wait for "Deploy complete!" and verify OIDC is active:
+Verify OIDC is active:
 
 ```bash
-CONTAINER=$(docker ps --format '{{.Names}}' | grep openshell-cluster)
-docker exec $CONTAINER kubectl -n openshell logs openshell-0 | grep OIDC
+kubectl -n openshell logs statefulset/openshell | grep OIDC
 # Expected: OIDC JWT validation enabled (issuer: http://...)
 ```
 
@@ -361,7 +358,7 @@ openshell provider delete test-provider
 
 ## 5. Scope-Based Permissions Testing
 
-Scopes provide fine-grained, per-method access control on top of roles. This section tests scope enforcement using both the standalone server and K3s.
+Scopes provide fine-grained, per-method access control on top of roles. This section tests scope enforcement using both the standalone server and Helm/k3d.
 
 ### 5a. Standalone server with scope enforcement
 
@@ -444,16 +441,6 @@ openshell gateway add http://127.0.0.1:8080 \
   --oidc-scopes "sandbox:read sandbox:write"
 ```
 
-Or for K3s testing, pass `OPENSHELL_OIDC_SCOPES` during cluster startup:
-
-```bash
-HOST_IP=$(hostname -I | awk '{print $1}')
-OPENSHELL_OIDC_ISSUER="http://${HOST_IP}:8180/realms/openshell" \
-OPENSHELL_OIDC_SCOPES_CLAIM="scope" \
-OPENSHELL_OIDC_SCOPES="sandbox:read sandbox:write" \
-mise run cluster
-```
-
 Then login and test:
 
 ```bash
@@ -466,15 +453,10 @@ openshell provider list   # should fail (no provider:read scope)
 
 ### 5f. Test openshell:all via CLI
 
-For K3s, restart the cluster with `openshell:all`:
+For Helm/k3d, update the OIDC scopes in the Helm values and redeploy:
 
 ```bash
-mise run cluster:stop
-HOST_IP=$(hostname -I | awk '{print $1}')
-OPENSHELL_OIDC_ISSUER="http://${HOST_IP}:8180/realms/openshell" \
-OPENSHELL_OIDC_SCOPES_CLAIM="scope" \
-OPENSHELL_OIDC_SCOPES="openshell:all" \
-mise run cluster
+mise run helm:skaffold:run
 
 openshell gateway login
 openshell sandbox list    # should work
@@ -514,8 +496,8 @@ grpcurl -plaintext -import-path proto -proto openshell.proto \
 ## 6. Cleanup
 
 ```bash
-# Stop the cluster
-mise run cluster:stop
+# Delete the local k3d cluster
+mise run helm:k3s:delete
 
 # Stop Keycloak
 mise run keycloak:stop
@@ -564,11 +546,11 @@ mise run keycloak:stop
 
 **"sandbox secret required for this method"** — A sandbox-to-server RPC was called without the `x-sandbox-secret` header.
 
-**"OIDC discovery request failed"** — Server can't reach Keycloak. Use the host IP (not `localhost`) for K3s deployments.
+**"OIDC discovery request failed"** — Server can't reach Keycloak. Check the Keycloak service and issuer configured in the Helm values.
 
 **"invalid token: unknown signing key"** — JWKS key mismatch. Restart the server to refresh the cache.
 
-**No "OIDC JWT validation enabled" in K3s logs** — The `OPENSHELL_OIDC_ISSUER` env var was not set when deploying. Re-run `OPENSHELL_OIDC_ISSUER="http://<HOST_IP>:8180/realms/openshell" mise run cluster gateway` to rebuild and redeploy with OIDC enabled.
+**No "OIDC JWT validation enabled" in gateway logs** — The Helm values did not set `server.oidc.issuer`. Include `values-keycloak.yaml` or another OIDC values overlay and redeploy with `mise run helm:skaffold:run`.
 
 **"InvalidIssuer"** — The issuer URL in the OIDC token does not match the server's configured issuer. Ensure the gateway metadata `oidc_issuer` uses the same URL the server was started with (typically the host IP, not `localhost`).
 
